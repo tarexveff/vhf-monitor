@@ -1,0 +1,23 @@
+# Python byte-code
+__pycache__
+*.pyc
+*.pyo
+
+# Version control
+.git
+.gitignore
+
+# Documentation (not needed in image)
+*.md
+vhf-monitor-plan.md
+
+# Python packaging artefacts
+**/*.egg-info
+
+# Virtual environments
+.venv
+venv
+
+# Archives
+*.tar
+*.tar.gz

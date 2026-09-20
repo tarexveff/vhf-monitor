@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VHF Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d0d0d;
+      --surface:  #1a1a1a;
+      --surface2: #222;
+      --border:   #333;
+      --text:     #e0e0e0;
+      --muted:    #888;
+      --green:    #00ff88;
+      --yellow:   #ffd700;
+      --red:      #ff4444;
+      --accent:   #00bfff;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 16px; font-weight: 600; color: var(--accent); flex: 1; }
+    #freq-display { font-size: 13px; color: var(--muted); font-family: monospace; }
+    #freq-display span { color: var(--text); }
+    .status-pill { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); transition: background 0.3s; }
+    .status-dot.connected { background: var(--green); }
+
+    /* ── Layout ── */
+    main { flex: 1; display: flex; overflow: hidden; }
+
+    /* ── Left panel ── */
+    .left-panel {
+      width: 240px;
+      min-width: 240px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      overflow-y: auto;
+    }
+
+    .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* Audio controls */
+    #play-btn {
+      width: 100%;
+      padding: 9px 0;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+      margin-bottom: 10px;
+    }
+    #play-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .volume-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    #vol-slider { flex: 1; accent-color: var(--accent); cursor: pointer; }
+
+    /* Squelch badge */
+    #squelch-badge {
+      display: block;
+      padding: 4px 0;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      background: #333;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+      text-align: center;
+      margin-bottom: 6px;
+    }
+    #squelch-badge.active { background: rgba(0,255,136,0.15); color: var(--green); border-color: var(--green); }
+
+    /* Signal meter */
+    .meter-outer {
+      height: 140px;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    .meter-scale {
+      position: absolute;
+      top: 0; right: 4px; bottom: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      font-size: 9px;
+      color: #555;
+      font-family: monospace;
+      pointer-events: none;
+    }
+    #meter-bar {
+      width: 100%;
+      height: 0%;
+      background: var(--green);
+      transition: height 0.08s linear, background 0.15s;
+    }
+    #meter-label { text-align: center; font-size: 11px; font-family: monospace; color: var(--muted); padding: 3px 0; }
+
+    /* ── Settings panel ── */
+    .settings-section { display: flex; flex-direction: column; gap: 12px; }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 11px; color: var(--muted); }
+    .field input[type="number"],
+    .field input[type="text"],
+    .field select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 6px 8px;
+      font-size: 13px;
+      font-family: monospace;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .field input:focus,
+    .field select:focus { border-color: var(--accent); }
+
+    .field-row { display: flex; gap: 8px; }
+    .field-row .field { flex: 1; }
+
+    .apply-btn {
+      width: 100%;
+      padding: 8px 0;
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      color: #000;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .apply-btn:hover { opacity: 0.85; }
+    .apply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #settings-status {
+      font-size: 11px;
+      color: var(--green);
+      text-align: center;
+      min-height: 16px;
+      transition: opacity 0.5s;
+    }
+
+    /* ── Right panel ── */
+    .right-panel { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
+
+    #spectrum-canvas {
+      width: 100%;
+      flex: 1;
+      min-height: 200px;
+      display: block;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    /* Footer */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 6px 20px;
+      display: flex;
+      gap: 24px;
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    footer span { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>VHF Monitor</h1>
+  <div id="freq-display">RX <span id="freq-val">—</span></div>
+  <div class="status-pill">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-label">Disconnected</span>
+  </div>
+</header>
+
+<main>
+  <!-- ── Left panel ── -->
+  <div class="left-panel">
+
+    <!-- Audio -->
+    <div>
+      <div class="section-title">Audio</div>
+      <button id="play-btn">▶ Play</button>
+      <div class="volume-row">
+        <span>Vol</span>
+        <input type="range" id="vol-slider" min="0" max="1" step="0.01" value="0.8" />
+        <span id="vol-pct">80%</span>
+      </div>
+    </div>
+
+    <!-- Signal -->
+    <div>
+      <div class="section-title">Signal</div>
+      <div id="squelch-badge">SILENT</div>
+      <div class="meter-outer">
+        <div class="meter-scale">
+          <span>0</span><span>-24</span><span>-48</span><span>-72</span><span>-96</span>
+        </div>
+        <div id="meter-bar"></div>
+      </div>
+      <div id="meter-label">— dBFS</div>
+    </div>
+
+    <!-- Settings -->
+    <div>
+      <div class="section-title">Receiver Settings</div>
+      <div class="settings-section">
+
+        <div class="field">
+          <label>Marine Channel</label>
+          <select id="channel-select">
+            <option value="">— Custom —</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Frequency (Hz)</label>
+          <input type="number" id="set-freq" step="5000" min="24000000" max="1766000000" />
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Gain (0=auto)</label>
+            <input type="number" id="set-gain" step="1" min="0" max="500" />
+          </div>
+          <div class="field">
+            <label>PPM Correction</label>
+            <input type="number" id="set-ppm" step="1" min="-100" max="100" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Squelch (dBFS, e.g. -40)</label>
+          <input type="number" id="set-squelch" step="1" min="-96" max="0" />
+        </div>
+
+        <button class="apply-btn" id="apply-btn">Apply Settings</button>
+        <div id="settings-status"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Right panel ── -->
+  <div class="right-panel">
+    <div class="section-title" style="margin:0">FFT Spectrum (0 – 24 kHz)</div>
+    <canvas id="spectrum-canvas"></canvas>
+  </div>
+</main>
+
+<footer>
+  <div>Freq: <span id="footer-freq">—</span></div>
+  <div>Sample rate: <span id="footer-sr">—</span></div>
+  <div>Squelch: <span id="footer-sq">—</span> dBFS</div>
+  <div>Device: <span id="footer-dev">—</span></div>
+</footer>
+
+<script>
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let audioCtx   = null;
+let gainNode   = null;
+let analyser   = null;
+let playing    = false;
+let nextTime   = 0;
+const JITTER   = 0.2; // seconds of jitter buffer
+
+let sock       = null;
+let liveConfig = {};
+let channels   = {};
+
+// ── Audio setup ───────────────────────────────────────────────────────────────
+function ensureAudioCtx() {
+  if (audioCtx) return;
+  audioCtx  = new AudioContext({ sampleRate: 48000 });
+  gainNode  = audioCtx.createGain();
+  analyser  = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.75;
+  gainNode.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  gainNode.gain.value = parseFloat(document.getElementById('vol-slider').value);
+}
+
+function scheduleOpusFrame(opusBytes) {
+  if (!playing || !audioCtx) return;
+
+  const decoder = new AudioDecoder({
+    output(audioData) {
+      const numFrames  = audioData.numberOfFrames;
+      const buf = audioCtx.createBuffer(1, numFrames, audioData.sampleRate);
+      const dest = new Float32Array(numFrames);
+      audioData.copyTo(dest, { planeIndex: 0 });
+      buf.copyToChannel(dest, 0);
+      audioData.close();
+
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(gainNode);
+
+      const now = audioCtx.currentTime;
+      if (nextTime < now + 0.01) nextTime = now + JITTER;
+      src.start(nextTime);
+      nextTime += buf.duration;
+    },
+    error(e) { console.warn('[VHF] AudioDecoder error', e); },
+  });
+
+  decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+  decoder.decode(new EncodedAudioChunk({
+    type: 'key',
+    timestamp: 0,
+    data: opusBytes,
+  }));
+  decoder.flush().catch(() => {});
+}
+
+// ── Play / Pause ──────────────────────────────────────────────────────────────
+document.getElementById('play-btn').addEventListener('click', () => {
+  ensureAudioCtx();
+  playing = !playing;
+  if (playing) {
+    audioCtx.resume();
+    nextTime = audioCtx.currentTime + JITTER;
+    document.getElementById('play-btn').textContent = '⏸ Pause';
+  } else {
+    document.getElementById('play-btn').textContent = '▶ Play';
+  }
+});
+
+// ── Volume ────────────────────────────────────────────────────────────────────
+document.getElementById('vol-slider').addEventListener('input', function() {
+  document.getElementById('vol-pct').textContent = Math.round(this.value * 100) + '%';
+  if (gainNode) gainNode.gain.value = parseFloat(this.value);
+});
+
+// ── FFT spectrum ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('spectrum-canvas');
+const ctx2d  = canvas.getContext('2d');
+
+function drawSpectrum() {
+  requestAnimationFrame(drawSpectrum);
+
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  }
+
+  ctx2d.fillStyle = '#111';
+  ctx2d.fillRect(0, 0, W, H);
+
+  if (!analyser) return;
+
+  const bins = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(bins);
+
+  const barW = W / bins.length;
+
+  for (let i = 0; i < bins.length; i++) {
+    const v = bins[i] / 255;
+    const h = v * (H - 24);
+    const hue = v < 0.5 ? 120 : (v < 0.75 ? 60 : 0);
+    ctx2d.fillStyle = `hsl(${hue},100%,50%)`;
+    ctx2d.fillRect(i * barW, H - 24 - h, Math.max(1, barW - 1), h);
+  }
+
+  // Grid lines + freq labels
+  ctx2d.strokeStyle = '#333';
+  ctx2d.fillStyle   = '#555';
+  ctx2d.font        = '9px monospace';
+  ctx2d.lineWidth   = 1;
+
+  const maxFreq = 24000;
+  const step    = 4000;
+  for (let f = 0; f <= maxFreq; f += step) {
+    const x = (f / maxFreq) * W;
+    ctx2d.beginPath();
+    ctx2d.moveTo(x, 0);
+    ctx2d.lineTo(x, H - 24);
+    ctx2d.stroke();
+    ctx2d.fillText(f === 0 ? '0' : (f / 1000) + 'k', x + 2, H - 12);
+  }
+
+  // dB labels on y-axis
+  ctx2d.fillStyle = '#555';
+  const dbLabels = [0, -24, -48, -72, -96];
+  for (const db of dbLabels) {
+    const y = ((0 - db) / 96) * (H - 24);
+    ctx2d.fillText(db + 'dB', 2, y + 10);
+  }
+}
+
+drawSpectrum();
+
+// ── Signal meter ──────────────────────────────────────────────────────────────
+function updateSignal(data) {
+  const db   = typeof data.db === 'number' ? data.db : -96;
+  const pct  = Math.max(0, Math.min(100, ((db + 96) / 96) * 100));
+  const bar  = document.getElementById('meter-bar');
+  bar.style.height = pct + '%';
+  bar.style.background = db > -20 ? 'var(--red)' : db > -40 ? 'var(--yellow)' : 'var(--green)';
+  document.getElementById('meter-label').textContent = db.toFixed(1) + ' dBFS';
+
+  const badge = document.getElementById('squelch-badge');
+  if (data.squelch) {
+    badge.textContent = 'ACTIVE';
+    badge.classList.add('active');
+  } else {
+    badge.textContent = 'SILENT';
+    badge.classList.remove('active');
+  }
+}
+
+// ── Config sync ───────────────────────────────────────────────────────────────
+function applyConfigToUI(cfg) {
+  liveConfig = cfg;
+  document.getElementById('freq-val').textContent   = (cfg.freq / 1e6).toFixed(4) + ' MHz';
+  document.getElementById('footer-freq').textContent = (cfg.freq / 1e6).toFixed(4) + ' MHz';
+  document.getElementById('footer-sr').textContent   = cfg.sample_rate + ' Hz';
+  document.getElementById('footer-sq').textContent   = cfg.squelch_db;
+  document.getElementById('footer-dev').textContent  = 'Index ' + cfg.device_index;
+
+  // Populate settings fields (only if not currently focused to avoid interrupting user)
+  if (document.activeElement !== document.getElementById('set-freq'))
+    document.getElementById('set-freq').value     = cfg.freq;
+  if (document.activeElement !== document.getElementById('set-gain'))
+    document.getElementById('set-gain').value     = cfg.gain;
+  if (document.activeElement !== document.getElementById('set-ppm'))
+    document.getElementById('set-ppm').value      = cfg.ppm;
+  if (document.activeElement !== document.getElementById('set-squelch'))
+    document.getElementById('set-squelch').value  = cfg.squelch_db;
+
+  // Sync channel selector
+  const sel = document.getElementById('channel-select');
+  let matched = false;
+  for (const opt of sel.options) {
+    if (parseInt(opt.value) === cfg.freq) { sel.value = opt.value; matched = true; break; }
+  }
+  if (!matched) sel.value = '';
+}
+
+// ── Marine channel selector ───────────────────────────────────────────────────
+function populateChannels(chMap) {
+  channels = chMap;
+  const sel = document.getElementById('channel-select');
+  for (const [name, freq] of Object.entries(chMap)) {
+    const opt = document.createElement('option');
+    opt.value = freq;
+    opt.textContent = name + ' — ' + (freq / 1e6).toFixed(4) + ' MHz';
+    sel.appendChild(opt);
+  }
+}
+
+document.getElementById('channel-select').addEventListener('change', function() {
+  if (this.value) {
+    document.getElementById('set-freq').value = this.value;
+  }
+});
+
+// ── Apply settings ────────────────────────────────────────────────────────────
+document.getElementById('apply-btn').addEventListener('click', () => {
+  if (!sock || sock.readyState !== WebSocket.OPEN) {
+    showSettingsStatus('Not connected', true);
+    return;
+  }
+
+  const freq    = parseInt(document.getElementById('set-freq').value);
+  const gain    = parseInt(document.getElementById('set-gain').value);
+  const ppm     = parseInt(document.getElementById('set-ppm').value);
+  const squelch = parseFloat(document.getElementById('set-squelch').value);
+
+  if (!freq || freq < 24e6 || freq > 1766e6) {
+    showSettingsStatus('Invalid frequency', true);
+    return;
+  }
+
+  const cmd = { cmd: 'set', freq, gain, ppm, squelch_db: squelch };
+  sock.send(JSON.stringify(cmd));
+  showSettingsStatus('Applying…');
+
+  // Disable button briefly to prevent double-sends
+  const btn = document.getElementById('apply-btn');
+  btn.disabled = true;
+  setTimeout(() => { btn.disabled = false; }, 2000);
+});
+
+function showSettingsStatus(msg, isError) {
+  const el = document.getElementById('settings-status');
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--red)' : 'var(--green)';
+  el.style.opacity = '1';
+  setTimeout(() => { el.style.opacity = '0'; }, 3000);
+}
+
+// ── Connection status ─────────────────────────────────────────────────────────
+function setConnected(on) {
+  document.getElementById('status-dot').classList.toggle('connected', on);
+  document.getElementById('status-label').textContent = on ? 'Connected' : 'Disconnected';
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function startWs() {
+  const url = 'ws://' + location.host + '/ws';
+  console.log('[VHF] connecting to', url);
+  sock = new WebSocket(url);
+  sock.binaryType = 'arraybuffer';
+
+  sock.onopen = () => {
+    console.log('[VHF] connected');
+    setConnected(true);
+    // Load channels from status endpoint on first connect
+    fetch('/status').then(r => r.json()).then(data => {
+      if (data.channels) populateChannels(data.channels);
+    }).catch(() => {});
+  };
+
+  sock.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      scheduleOpusFrame(event.data);
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(event.data); } catch(e) { return; }
+
+    if (msg.type === 'signal') {
+      updateSignal(msg);
+    } else if (msg.type === 'config') {
+      const isUpdate = Object.keys(liveConfig).length > 0; // not the initial push
+      applyConfigToUI(msg);
+      if (isUpdate) showSettingsStatus('Settings applied ✓');
+    }
+  };
+
+  sock.onclose = (e) => {
+    console.log('[VHF] closed code=' + e.code + ' — reconnecting in 3s');
+    setConnected(false);
+    setTimeout(startWs, 3000);
+  };
+
+  sock.onerror = () => setConnected(false);
+}
+
+window.addEventListener('load', startWs);
+</script>
+</body>
+</html>
