@@ -319,9 +319,14 @@ let playing    = false;
 let nextTime   = 0;
 const JITTER   = 0.2; // seconds of jitter buffer
 
-let sock       = null;
-let liveConfig = {};
-let channels   = {};
+let sock          = null;
+let liveConfig    = {};
+let channels      = {};
+
+// Single reusable AudioDecoder — created once when Play is clicked,
+// reset if it enters an error state.
+let opusDecoder   = null;
+let frameCount    = 0;  // tracks how many frames have been decoded
 
 // ── Audio setup ───────────────────────────────────────────────────────────────
 function ensureAudioCtx() {
@@ -336,13 +341,13 @@ function ensureAudioCtx() {
   gainNode.gain.value = parseFloat(document.getElementById('vol-slider').value);
 }
 
-function scheduleOpusFrame(opusBytes) {
-  if (!playing || !audioCtx) return;
-
-  const decoder = new AudioDecoder({
+function ensureDecoder() {
+  if (opusDecoder && opusDecoder.state !== 'closed') return;
+  frameCount = 0;
+  opusDecoder = new AudioDecoder({
     output(audioData) {
-      const numFrames  = audioData.numberOfFrames;
-      const buf = audioCtx.createBuffer(1, numFrames, audioData.sampleRate);
+      const numFrames = audioData.numberOfFrames;
+      const buf  = audioCtx.createBuffer(1, numFrames, audioData.sampleRate);
       const dest = new Float32Array(numFrames);
       audioData.copyTo(dest, { planeIndex: 0 });
       buf.copyToChannel(dest, 0);
@@ -357,16 +362,35 @@ function scheduleOpusFrame(opusBytes) {
       src.start(nextTime);
       nextTime += buf.duration;
     },
-    error(e) { console.warn('[VHF] AudioDecoder error', e); },
+    error(e) {
+      console.warn('[VHF] AudioDecoder error — resetting decoder', e);
+      opusDecoder = null; // will be recreated on next frame
+    },
   });
+  opusDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
+  console.log('[VHF] AudioDecoder created and configured');
+}
 
-  decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
-  decoder.decode(new EncodedAudioChunk({
-    type: 'key',
-    timestamp: 0,
-    data: opusBytes,
-  }));
-  decoder.flush().catch(() => {});
+function scheduleOpusFrame(opusBytes) {
+  if (!playing || !audioCtx) return;
+
+  ensureDecoder();
+  if (!opusDecoder || opusDecoder.state === 'closed') return;
+
+  // First frame of a new decoder instance must be 'key'; rest are 'delta'
+  const chunkType = frameCount === 0 ? 'key' : 'delta';
+  frameCount++;
+
+  try {
+    opusDecoder.decode(new EncodedAudioChunk({
+      type: chunkType,
+      timestamp: (frameCount - 1) * 20000, // microseconds, 20ms per frame
+      data: opusBytes,
+    }));
+  } catch(e) {
+    console.warn('[VHF] decode() threw — resetting decoder', e);
+    opusDecoder = null;
+  }
 }
 
 // ── Play / Pause ──────────────────────────────────────────────────────────────
