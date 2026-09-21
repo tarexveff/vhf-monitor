@@ -312,85 +312,55 @@
 'use strict';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let audioCtx   = null;
-let gainNode   = null;
-let analyser   = null;
-let playing    = false;
-let nextTime   = 0;
-const JITTER   = 0.2; // seconds of jitter buffer
+let audioCtx  = null;
+let gainNode  = null;
+let analyser  = null;
+let playing   = false;
+let nextTime  = 0;
+const SAMPLE_RATE = 48000;
+const JITTER      = 0.3; // seconds of jitter buffer
 
-let sock          = null;
-let liveConfig    = {};
-let channels      = {};
-
-// Single reusable AudioDecoder — created once when Play is clicked,
-// reset if it enters an error state.
-let opusDecoder   = null;
-let frameCount    = 0;  // tracks how many frames have been decoded
+let sock       = null;
+let liveConfig = {};
+let channels   = {};
 
 // ── Audio setup ───────────────────────────────────────────────────────────────
 function ensureAudioCtx() {
   if (audioCtx) return;
-  audioCtx  = new AudioContext({ sampleRate: 48000 });
-  gainNode  = audioCtx.createGain();
-  analyser  = audioCtx.createAnalyser();
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  gainNode = audioCtx.createGain();
+  analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.75;
   gainNode.connect(analyser);
   analyser.connect(audioCtx.destination);
   gainNode.gain.value = parseFloat(document.getElementById('vol-slider').value);
+  console.log('[VHF] AudioContext created, sampleRate=' + audioCtx.sampleRate);
 }
 
-function ensureDecoder() {
-  if (opusDecoder && opusDecoder.state !== 'closed') return;
-  frameCount = 0;
-  opusDecoder = new AudioDecoder({
-    output(audioData) {
-      const numFrames = audioData.numberOfFrames;
-      const buf  = audioCtx.createBuffer(1, numFrames, audioData.sampleRate);
-      const dest = new Float32Array(numFrames);
-      audioData.copyTo(dest, { planeIndex: 0 });
-      buf.copyToChannel(dest, 0);
-      audioData.close();
-
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(gainNode);
-
-      const now = audioCtx.currentTime;
-      if (nextTime < now + 0.01) nextTime = now + JITTER;
-      src.start(nextTime);
-      nextTime += buf.duration;
-    },
-    error(e) {
-      console.warn('[VHF] AudioDecoder error — resetting decoder', e);
-      opusDecoder = null; // will be recreated on next frame
-    },
-  });
-  opusDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
-  console.log('[VHF] AudioDecoder created and configured');
-}
-
-function scheduleOpusFrame(opusBytes) {
+// ── PCM float32 playback ──────────────────────────────────────────────────────
+// The server sends raw IEEE 754 float32 little-endian PCM (mono, 48 kHz).
+// We decode it directly into an AudioBuffer and schedule it for gapless
+// playback — no codec library or WebCodecs API required.
+function schedulePcmFrame(arrayBuffer) {
   if (!playing || !audioCtx) return;
 
-  ensureDecoder();
-  if (!opusDecoder || opusDecoder.state === 'closed') return;
+  // Each 4-byte group is one float32 sample
+  const float32 = new Float32Array(arrayBuffer);
+  if (float32.length === 0) return;
 
-  // First frame of a new decoder instance must be 'key'; rest are 'delta'
-  const chunkType = frameCount === 0 ? 'key' : 'delta';
-  frameCount++;
+  const buf = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
+  buf.copyToChannel(float32, 0);
 
-  try {
-    opusDecoder.decode(new EncodedAudioChunk({
-      type: chunkType,
-      timestamp: (frameCount - 1) * 20000, // microseconds, 20ms per frame
-      data: opusBytes,
-    }));
-  } catch(e) {
-    console.warn('[VHF] decode() threw — resetting decoder', e);
-    opusDecoder = null;
-  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(gainNode);
+
+  // Maintain a continuous timeline — if we fall behind, resync
+  const now = audioCtx.currentTime;
+  if (nextTime < now + 0.01) nextTime = now + JITTER;
+  src.start(nextTime);
+  nextTime += buf.duration;
 }
 
 // ── Play / Pause ──────────────────────────────────────────────────────────────
@@ -596,7 +566,7 @@ function startWs() {
 
   sock.onmessage = (event) => {
     if (event.data instanceof ArrayBuffer) {
-      scheduleOpusFrame(event.data);
+      schedulePcmFrame(event.data);
       return;
     }
     let msg;

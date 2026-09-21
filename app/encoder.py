@@ -1,32 +1,26 @@
 """
-encoder.py — PCM → Opus encoder with RMS/squelch computation.
+encoder.py — PCM chunker with RMS/squelch computation.
 
-Consumes raw 16-bit signed mono PCM chunks from an asyncio.Queue,
-encodes each chunk to an Opus frame, and broadcasts both the encoded
-audio and signal metadata to connected WebSocket clients.
+Consumes raw 16-bit signed mono PCM chunks from an asyncio.Queue, computes
+signal level, and broadcasts:
+  - binary frames: raw IEEE 754 float32 PCM (little-endian) for direct Web
+    Audio API playback in the browser — no codec negotiation required.
+  - text frames:   JSON signal metadata (rms, db, squelch state).
 
-Squelch threshold is read from the shared config on every frame so
-UI changes take effect immediately without restarting the encoder.
+Squelch threshold is read from the shared config on every frame so UI changes
+take effect immediately without restarting.
 """
 
 import array
 import asyncio
 import logging
 import os
+import struct
 from math import log10, sqrt
 
 from app.config import config
 
 logger = logging.getLogger(__name__)
-
-try:
-    import opuslib
-except ImportError:
-    opuslib = None  # type: ignore[assignment]
-    logger.error(
-        "opuslib is not installed — Opus encoding unavailable. "
-        "Install it with: pip install opuslib"
-    )
 
 # ---------------------------------------------------------------------------
 # Module-level signal state — exported for the /status endpoint
@@ -49,6 +43,17 @@ def compute_rms(pcm_bytes: bytes) -> tuple[float, float]:
     return rms, db_fs
 
 
+def pcm16_to_float32(pcm_bytes: bytes) -> bytes:
+    """Convert 16-bit signed PCM bytes to float32 PCM bytes (range -1.0 to 1.0).
+
+    The browser's Web Audio API works natively with float32 samples, so we
+    convert here to avoid any JS typed-array juggling on the client side.
+    """
+    samples = array.array("h", pcm_bytes)
+    floats  = array.array("f", (s / 32768.0 for s in samples))
+    return floats.tobytes()
+
+
 # ---------------------------------------------------------------------------
 # Encoder loop
 # ---------------------------------------------------------------------------
@@ -58,24 +63,24 @@ async def encode_loop(
     broadcast_audio_fn,
     broadcast_signal_fn,
 ) -> None:
-    """Continuously read PCM chunks, encode to Opus, and broadcast results.
+    """Continuously read PCM chunks, convert to float32, and broadcast.
+
+    Sends raw float32 PCM as binary WebSocket frames — the browser plays these
+    directly via the Web Audio API without any codec decoding step.
 
     Squelch threshold is taken from ``config.squelch_db`` on every frame so
-    changes made via the UI take effect without restarting the encoder.
+    changes made via the UI take effect without restarting.
     """
     global current_signal
 
     sample_rate: int = int(os.environ.get("AUDIO_SAMPLE_RATE", "48000"))
-    frame_size:  int = sample_rate // 50       # 960 samples @ 20 ms
-    chunk_bytes: int = frame_size * 1 * 2      # mono, 2 bytes/sample
+    # 20 ms chunks: 48000 * 0.020 = 960 samples, 2 bytes each = 1920 bytes
+    frame_size:  int = sample_rate // 50
+    chunk_bytes: int = frame_size * 2   # 16-bit mono
 
-    if opuslib is None:
-        logger.error("encode_loop: opuslib unavailable — loop will not start.")
-        return
-
-    encoder = opuslib.Encoder(sample_rate, 1, opuslib.APPLICATION_VOIP)
     logger.info(
-        "Opus encoder ready: sample_rate=%d frame_size=%d chunk_bytes=%d",
+        "Audio loop ready: sample_rate=%d frame_size=%d chunk_bytes=%d "
+        "(sending raw float32 PCM — no Opus encoding)",
         sample_rate, frame_size, chunk_bytes,
     )
 
@@ -86,15 +91,10 @@ async def encode_loop(
             continue
 
         rms, db = compute_rms(pcm)
-        # Read squelch from shared config — updated live by UI without restart
         squelch_active = db > config.squelch_db
         current_signal = {"rms": rms, "db": round(db, 1), "squelch": squelch_active}
 
-        try:
-            opus_frame: bytes = encoder.encode(pcm, frame_size)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Opus encode error (frame skipped): %s", exc)
-            continue
-
-        await broadcast_audio_fn(opus_frame)
+        # Convert to float32 and broadcast as binary frame
+        float32_data = pcm16_to_float32(pcm)
+        await broadcast_audio_fn(float32_data)
         await broadcast_signal_fn(current_signal)

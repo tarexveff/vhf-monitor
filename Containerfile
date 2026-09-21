@@ -8,7 +8,7 @@
 FROM fedora:latest AS builder
 
 RUN dnf install --nodocs -y \
-        cmake make gcc gcc-c++ libusb1-devel opus-devel pkg-config git \
+        cmake make gcc gcc-c++ libusb1-devel pkg-config git \
     && dnf clean all
 
 # --- librtlsdr ----------------------------------------------------------------
@@ -47,14 +47,12 @@ RUN ["python3", "-c", "import os; [os.makedirs(p, exist_ok=True) for p in ['/app
 # Both lib/ (x86_64) and lib64/ (aarch64) are included.
 COPY --from=builder /opt/rtlsdr /opt/rtlsdr
 
-# Copy libusb1 and libopus runtime shared libraries from the builder stage.
+# Copy libusb1 runtime shared library from the builder stage.
 # hi/python has no package manager, so we copy directly from the builder.
 COPY --from=builder /usr/lib64/libusb-1.0.so* /usr/lib64/
-COPY --from=builder /usr/lib64/libopus.so* /usr/lib64/
 
 # Run ldconfig so the dynamic linker cache knows about the newly copied .so
-# files. opuslib uses ctypes.util.find_library('opus') which consults ldconfig.
-# python3 -c is used because this image has no shell.
+# files. python3 -c is used because this image has no shell.
 RUN ["python3", "-c", "import subprocess; subprocess.run(['/bin/ldconfig'], check=True)"]
 
 # Put rtl_fm on PATH; expose all lib paths for aarch64/x86_64 and copied libs.
